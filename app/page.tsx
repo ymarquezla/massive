@@ -2,6 +2,7 @@ import QuotePanel from "@/components/QuotePanel";
 import PriceChart from "@/components/PriceChart";
 import SignalPanel from "@/components/SignalPanel";
 import NewsPanel from "@/components/NewsPanel";
+import TradingAgent from "@/components/TradingAgent";
 import { getQuote, getProfile, getNews, getMetrics } from "@/lib/finnhub";
 
 const SYMBOL = process.env.NEXT_PUBLIC_SYMBOL || "APLD";
@@ -43,7 +44,11 @@ export default async function Home() {
           </div>
         </div>
         <PriceChart symbol={SYMBOL} />
-        <NewsPanel news={news} />
+        {/* Bottom row: news + agent */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <NewsPanel news={news} />
+          <TradingAgent />
+        </div>
       </div>
     </main>
   );
