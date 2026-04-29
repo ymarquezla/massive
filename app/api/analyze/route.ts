@@ -1,8 +1,20 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { getQuote, getNews, getMetrics } from "@/lib/finnhub";
+import { getNews, getMetrics } from "@/lib/finnhub";
+import { getYahooQuote, getYahooHistory } from "@/lib/yahoo";
 import { getIntraday } from "@/lib/polygon";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || "placeholder" });
+
+function sma(closes: number[], period: number): number | null {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  return +(slice.reduce((a, b) => a + b, 0) / period).toFixed(4);
+}
+
+function avgVolume(volumes: number[], period: number): number {
+  const slice = volumes.slice(-period);
+  return Math.round(slice.reduce((a, b) => a + b, 0) / slice.length);
+}
 
 export async function POST(req: Request) {
   const { symbol, question } = await req.json();
@@ -10,41 +22,61 @@ export async function POST(req: Request) {
 
   const sym = symbol.toUpperCase();
 
-  const [quote, news, metrics, candles1d, candles5d] = await Promise.allSettled([
-    getQuote(sym),
+  const [quoteRes, newsRes, metricsRes, historyRes, intradayRes] = await Promise.allSettled([
+    getYahooQuote(sym),
     getNews(sym),
     getMetrics(sym),
-    getIntraday(sym, 1, "day"),
+    getYahooHistory(sym, "3mo"),
     getIntraday(sym, 5, "minute"),
   ]);
 
-  const q = quote.status === "fulfilled" ? quote.value : {};
-  const n = news.status === "fulfilled" ? news.value.slice(0, 5) : [];
-  const m = metrics.status === "fulfilled" ? metrics.value?.metric || {} : {};
-  const daily = candles1d.status === "fulfilled" ? (candles1d.value?.results || []).slice(-7) : [];
-  const intraday = candles5d.status === "fulfilled" ? (candles5d.value?.results || []).slice(-50) : [];
+  const q = quoteRes.status === "fulfilled" ? quoteRes.value : null;
+  const n = newsRes.status === "fulfilled" ? newsRes.value.slice(0, 5) : [];
+  const m = metricsRes.status === "fulfilled" ? metricsRes.value?.metric || {} : {};
+  const history = historyRes.status === "fulfilled" ? historyRes.value : [];
+  const intraday = intradayRes.status === "fulfilled" ? (intradayRes.value?.results || []).slice(-50) : [];
+
+  // Compute technicals from history
+  const closes = history.map((b) => b.close);
+  const volumes = history.map((b) => b.volume);
+  const sma10 = sma(closes, 10);
+  const sma20 = sma(closes, 20);
+  const sma50 = sma(closes, 50);
+  const avgVol10 = avgVolume(volumes, 10);
+  const avgVol30 = avgVolume(volumes, 30);
+  const last30 = history.slice(-30);
+  const rangeHigh = Math.max(...last30.map((b) => b.high));
+  const rangeLow = Math.min(...last30.map((b) => b.low));
 
   const context = `
 STOCK: ${sym}
 DATE: ${new Date().toLocaleDateString()}
 
 === CURRENT QUOTE ===
-Price: $${q.c} | Change: ${q.d > 0 ? "+" : ""}${q.d} (${q.dp?.toFixed(2)}%)
-Open: $${q.o} | High: $${q.h} | Low: $${q.l} | Prev Close: $${q.pc}
+Price: $${q?.price ?? "N/A"} | Change: ${(q?.change ?? 0) >= 0 ? "+" : ""}${q?.change} (${q?.changePct?.toFixed(2)}%)
+Open: $${q?.open} | High: $${q?.high} | Low: $${q?.low} | Prev Close: $${q?.prevClose}
+Volume: ${q ? (q.volume / 1e6).toFixed(2) + "M" : "N/A"} | Market State: ${q?.marketState ?? "UNKNOWN"}
+${q?.postPrice ? `After-Hours: $${q.postPrice} (${q.postChange! >= 0 ? "+" : ""}${q.postChange}, ${q.postChangePct?.toFixed(2)}%)` : ""}
+${q?.prePrice ? `Pre-Market: $${q.prePrice} (${q.preChange! >= 0 ? "+" : ""}${q.preChange}, ${q.preChangePct?.toFixed(2)}%)` : ""}
 
-=== LAST 7 DAILY BARS ===
-${daily.map((b: {t:number;o:number;h:number;l:number;c:number;v:number}) =>
-  `${new Date(b.t).toLocaleDateString()} O:${b.o} H:${b.h} L:${b.l} C:${b.c} V:${(b.v/1e6).toFixed(2)}M`
-).join("\n") || "No daily data available"}
+=== HISTORICAL DAILY BARS (last 30 days) ===
+${last30.map((b) =>
+  `${b.date} O:${b.open} H:${b.high} L:${b.low} C:${b.close} V:${(b.volume / 1e6).toFixed(2)}M`
+).join("\n") || "No history available"}
+
+=== TECHNICAL INDICATORS ===
+SMA10: ${sma10 ?? "N/A"} | SMA20: ${sma20 ?? "N/A"} | SMA50: ${sma50 ?? "N/A"}
+10D Avg Volume: ${(avgVol10 / 1e6).toFixed(2)}M | 30D Avg Volume: ${(avgVol30 / 1e6).toFixed(2)}M
+30D Range High: $${rangeHigh.toFixed(2)} | 30D Range Low: $${rangeLow.toFixed(2)}
+Price vs SMA10: ${sma10 && q ? ((q.price - sma10) / sma10 * 100).toFixed(2) + "%" : "N/A"}
+Price vs SMA20: ${sma20 && q ? ((q.price - sma20) / sma20 * 100).toFixed(2) + "%" : "N/A"}
+52W High: $${m["52WeekHigh"] ?? "N/A"} | 52W Low: $${m["52WeekLow"] ?? "N/A"}
+Beta: ${m["beta"] ?? "N/A"}
 
 === TODAY'S 5-MIN BARS (last 50) ===
 ${intraday.map((b: {t:number;o:number;h:number;l:number;c:number;v:number}) =>
   `${new Date(b.t).toLocaleTimeString()} O:${b.o} H:${b.h} L:${b.l} C:${b.c} V:${b.v}`
-).join("\n") || "No intraday data (market may be closed)"}
-
-=== KEY METRICS ===
-52W High: $${m["52WeekHigh"] ?? "N/A"} | 52W Low: $${m["52WeekLow"] ?? "N/A"}
-Beta: ${m["beta"] ?? "N/A"} | 10D Avg Volume: ${m["10DayAverageTradingVolume"] ? (m["10DayAverageTradingVolume"]*1e6).toFixed(0) : "N/A"}
+).join("\n") || "No intraday data (market closed)"}
 
 === RECENT NEWS (last 7 days) ===
 ${n.map((a: {headline:string;datetime:number;source:string}) =>
@@ -52,9 +84,8 @@ ${n.map((a: {headline:string;datetime:number;source:string}) =>
 ).join("\n") || "No recent news"}
 `;
 
-  const userQuestion = question || `Analyze ${sym} for day trading today.`;
+  const userQuestion = question || `Analyze ${sym} for day trading tomorrow.`;
 
-  // Test mode: return raw context if no API key configured
   if (!process.env.ANTHROPIC_API_KEY) {
     return new Response(
       `⚠️ No Anthropic API key configured — showing raw market data instead:\n\n${context}`,
@@ -65,17 +96,18 @@ ${n.map((a: {headline:string;datetime:number;source:string}) =>
   const stream = await client.messages.stream({
     model: "claude-opus-4-7",
     max_tokens: 1024,
-    system: `You are an expert day trader and technical analyst. You analyze stocks purely for intraday and short-term (7-day) trading opportunities.
+    system: `You are an expert day trader and technical analyst. You analyze stocks purely for intraday and short-term trading opportunities.
 
-Focus only on:
-- Price action and momentum from the last 7 days
-- Today's intraday price action
-- Volume patterns (high volume = conviction)
-- Key support/resistance levels from recent bars
-- News catalysts from the last 7 days
-- Clear entry, target, and stop-loss levels
+Focus on:
+- Price action and momentum from historical daily bars
+- Volume vs average volume (high relative volume = conviction)
+- Moving averages (SMA10/20/50) as dynamic support/resistance
+- Key support/resistance levels from the 30-day range
+- After-hours/pre-market price signals
+- News catalysts
+- Clear entry price, target, and stop-loss levels
 
-Be direct, concise, and actionable. Use bullet points. Always include a clear BIAS (Bullish/Bearish/Neutral) and a suggested trade setup if warranted. Do NOT discuss long-term fundamentals or valuation.`,
+Be direct and actionable. Use bullet points. Always include a BIAS (Bullish/Bearish/Neutral) and a concrete trade setup. Do NOT discuss long-term fundamentals.`,
     messages: [{ role: "user", content: `${context}\n\nQuestion: ${userQuestion}` }],
   });
 

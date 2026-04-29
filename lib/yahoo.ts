@@ -79,3 +79,32 @@ export async function getYahooQuote(symbol: string) {
     fiftyTwoWeekLow: meta.fiftyTwoWeekLow ?? 0,
   };
 }
+
+export interface DailyBar {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export async function getYahooHistory(symbol: string, range = "3mo"): Promise<DailyBar[]> {
+  const raw = await httpsGet(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=${range}`
+  );
+  const result = JSON.parse(raw)?.chart?.result?.[0];
+  if (!result) return [];
+  const timestamps: number[] = result.timestamp ?? [];
+  const q = result.indicators?.quote?.[0] ?? {};
+  return timestamps
+    .map((t, i) => ({
+      date: new Date(t * 1000).toISOString().split("T")[0],
+      open: +( q.open?.[i] ?? 0).toFixed(4),
+      high: +(q.high?.[i] ?? 0).toFixed(4),
+      low:  +(q.low?.[i]  ?? 0).toFixed(4),
+      close: +(q.close?.[i] ?? 0).toFixed(4),
+      volume: q.volume?.[i] ?? 0,
+    }))
+    .filter((b) => b.close > 0);
+}
