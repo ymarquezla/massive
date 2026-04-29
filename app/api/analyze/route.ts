@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getQuote, getNews, getMetrics } from "@/lib/finnhub";
 import { getIntraday } from "@/lib/polygon";
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || "placeholder" });
 
 export async function POST(req: Request) {
   const { symbol, question } = await req.json();
@@ -53,6 +53,14 @@ ${n.map((a: {headline:string;datetime:number;source:string}) =>
 `;
 
   const userQuestion = question || `Analyze ${sym} for day trading today.`;
+
+  // Test mode: return raw context if no API key configured
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return new Response(
+      `⚠️ No Anthropic API key configured — showing raw market data instead:\n\n${context}`,
+      { headers: { "Content-Type": "text/plain; charset=utf-8" } }
+    );
+  }
 
   const stream = await client.messages.stream({
     model: "claude-opus-4-7",

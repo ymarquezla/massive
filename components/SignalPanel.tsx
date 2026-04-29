@@ -16,14 +16,13 @@ function Signal({ label, value, bull, bear }: { label: string; value: string; bu
   );
 }
 
-export default function SignalPanel({ metrics, quote }: { metrics: Metrics; quote: { c: number; pc: number } }) {
+export default function SignalPanel({ metrics, quote }: { metrics: Metrics; quote: { price: number; prevClose: number } }) {
   const m = metrics?.metric || {};
 
-  const rsi = m["rsi"] ?? m["10DayAverageTradingVolume"];
   const w52High = m["52WeekHigh"];
   const w52Low = m["52WeekLow"];
   const beta = m["beta"];
-  const price = quote.c;
+  const price = quote.price;
   const pctFrom52High = w52High ? ((price - w52High) / w52High) * 100 : null;
   const pctFrom52Low = w52Low ? ((price - w52Low) / w52Low) * 100 : null;
 
@@ -49,8 +48,8 @@ export default function SignalPanel({ metrics, quote }: { metrics: Metrics; quot
       />
       <Signal
         label="Day Change"
-        value={`${quote.c > quote.pc ? "+" : ""}${(((quote.c - quote.pc) / quote.pc) * 100).toFixed(2)}%`}
-        bull={quote.c >= quote.pc}
+        value={`${quote.price > quote.prevClose ? "+" : ""}${(((quote.price - quote.prevClose) / quote.prevClose) * 100).toFixed(2)}%`}
+        bull={quote.price >= quote.prevClose}
       />
     </div>
   );
